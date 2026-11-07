@@ -28,7 +28,8 @@ pub fn prefix_tree(data: &str) -> String {
 
     let mut graph = VisualGraph::new(Orientation::TopToBottom);
 
-    if let Some(root) = root {
+    if let Some(mut root) = root {
+        root.sort();
         root.convert(0, &mut graph);
     }
 
@@ -60,6 +61,16 @@ impl PrefixTree {
         }
 
         Self::insert(&mut root.children.push_mut((char, None)).1, iter);
+    }
+
+    fn sort(&mut self) {
+        self.children.iter_mut().for_each(|(_, child)| {
+            if let Some(child) = child {
+                child.sort()
+            }
+        });
+
+        self.children.sort_unstable_by_key(|(char, _)| *char);
     }
 
     fn convert(&self, depth: usize, graph: &mut VisualGraph) -> NodeHandle {
