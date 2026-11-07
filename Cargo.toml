@@ -7,4 +7,5 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
+layout-rs = "0.1.3"
 wasm-bindgen = "0.2.130"
