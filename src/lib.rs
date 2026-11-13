@@ -29,7 +29,11 @@ pub fn tree(config: &Config, data: &str) -> String {
             None => (line, None),
             Some((key, value)) => (key, value.trim().parse::<i32>().ok()),
         })
-        .map(|(key, value)| (key.trim().chars().collect::<Vec<_>>(), value))
+        .map(|(key, value)| (key.trim(), value))
+        .filter(|(key, _)| !key.is_empty())
+        .filter(|(key, _)| key.trim().chars().all(|char| char.is_ascii_lowercase()))
+        .map(|(key, value)| (key.bytes().collect::<Vec<_>>(), value))
+        .filter(|(key, _)| !key.is_empty())
         .collect::<Vec<_>>();
 
     for (key, value) in &data {
@@ -59,21 +63,13 @@ pub fn tree(config: &Config, data: &str) -> String {
 
 #[derive(Default)]
 struct Node<'a> {
-    edges: Vec<(char, Edge<'a>)>,
+    edges: Vec<(u8, Edge<'a>)>,
 }
 
+#[derive(Default)]
 struct Edge<'a> {
-    chars: &'a [char],
+    chars: &'a [u8],
     child: Child<'a>,
-}
-
-impl Default for Edge<'_> {
-    fn default() -> Self {
-        Self {
-            chars: Default::default(),
-            child: Default::default(),
-        }
-    }
 }
 
 enum Child<'a> {
@@ -82,7 +78,7 @@ enum Child<'a> {
 }
 
 impl<'a> Child<'a> {
-    fn get_mut(&mut self, char: char) -> Option<&mut Edge<'a>> {
+    fn get_mut(&mut self, char: u8) -> Option<&mut Edge<'a>> {
         match self {
             Self::Node(node) => node
                 .edges
@@ -92,7 +88,7 @@ impl<'a> Child<'a> {
         }
     }
 
-    fn push(&mut self, char: char, edge: Edge<'a>) {
+    fn push(&mut self, char: u8, edge: Edge<'a>) {
         match self {
             Self::Node(node) => {
                 node.edges.push((char, edge));
@@ -129,7 +125,7 @@ impl Config {
     }
 }
 
-fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char], value: Option<i32>) {
+fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [u8], value: Option<i32>) {
     if key.is_empty() {
         return;
     };
@@ -172,7 +168,7 @@ fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char], value: Opti
     }
 }
 
-fn path<'a>(config: &Config, key: &'a [char], value: Option<i32>) -> Edge<'a> {
+fn path<'a>(config: &Config, key: &'a [u8], value: Option<i32>) -> Edge<'a> {
     if key.len() > config.max_edge_len {
         Edge {
             chars: &key[..config.max_edge_len],
@@ -210,7 +206,7 @@ fn convert_edge(
     stack: &mut String,
     graph: &mut VisualGraph,
 ) {
-    root.chars.iter().for_each(|c| stack.push(*c));
+    root.chars.iter().for_each(|c| stack.push(*c as char));
     let child = convert_child(config, &root.child, stack, graph);
     root.chars.iter().map(|_| stack.pop()).count();
 
@@ -218,7 +214,11 @@ fn convert_edge(
         LineEndKind::None,
         LineEndKind::Arrow,
         LineStyleKind::Normal,
-        &root.chars.iter().collect::<String>(),
+        &root
+            .chars
+            .iter()
+            .map(|byte| *byte as char)
+            .collect::<String>(),
         &StyleAttr::simple(),
         &Some(stack.clone()),
         &None,
@@ -247,7 +247,7 @@ fn convert_child(
             let mut edges = 0u32;
             root.edges
                 .iter()
-                .for_each(|(c, _)| edges |= 1 << (*c as u32).saturating_sub('a' as u32).min(26));
+                .for_each(|(c, _)| edges |= 1 << (*c - b'a'));
 
             let mut record = if config.node_sizes.len() > 1 {
                 vec![RecordDef::Text(format!("Node{}", len), None)]
@@ -311,7 +311,7 @@ fn convert_child(
 
     if let Child::Node(root) = root {
         root.edges.iter().for_each(|(c, edge)| {
-            stack.push(*c);
+            stack.push(*c as char);
             convert_edge(config, edge, parent, stack, graph);
             stack.pop();
         });
