@@ -23,22 +23,18 @@ extern "C" {
 pub fn tree(config: &Config, data: &str) -> String {
     let mut root = Edge::default();
 
-    let data = data
-        .lines()
+    data.lines()
         .map(|line| match line.split_once('=') {
             None => (line, None),
             Some((key, value)) => (key, value.trim().parse::<i32>().ok()),
         })
         .map(|(key, value)| (key.trim(), value))
         .filter(|(key, _)| !key.is_empty())
-        .filter(|(key, _)| key.trim().chars().all(|char| char.is_ascii_lowercase()))
-        .map(|(key, value)| (key.bytes().collect::<Vec<_>>(), value))
-        .filter(|(key, _)| !key.is_empty())
-        .collect::<Vec<_>>();
-
-    for (key, value) in &data {
-        insert(config, &mut root, key, *value);
-    }
+        .filter(|(key, _)| key.chars().all(|char| char.is_ascii_lowercase()))
+        .map(|(key, value)| (key.as_bytes(), value))
+        .for_each(|(key, value)| {
+            insert(config, &mut root, key, value);
+        });
 
     sort_edge(&mut root);
 
@@ -112,6 +108,7 @@ impl Default for Child<'_> {
 pub struct Config {
     max_edge_len: usize,
     node_sizes: Vec<usize>,
+    highlight: Option<usize>,
 }
 
 #[wasm_bindgen]
@@ -121,6 +118,7 @@ impl Config {
         Self {
             max_edge_len,
             node_sizes,
+            highlight: None,
         }
     }
 }
@@ -180,7 +178,6 @@ fn path<'a>(config: &Config, key: &'a [u8], value: Option<i32>) -> Edge<'a> {
             }),
         }
     } else {
-        log(&format!("value = {value:?}"));
         Edge {
             chars: key,
             child: Child::Value(value),
