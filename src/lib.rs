@@ -24,12 +24,16 @@ pub fn tree(config: &Config, data: &str) -> String {
     let mut root = Edge::default();
 
     let data = data
-        .split_whitespace()
-        .map(|line| line.chars().collect::<Vec<_>>())
+        .lines()
+        .map(|line| match line.split_once('=') {
+            None => (line, None),
+            Some((key, value)) => (key, value.trim().parse::<i32>().ok()),
+        })
+        .map(|(key, value)| (key.trim().chars().collect::<Vec<_>>(), value))
         .collect::<Vec<_>>();
 
-    for line in &data {
-        insert(config, &mut root, line);
+    for (key, value) in &data {
+        insert(config, &mut root, key, *value);
     }
 
     sort_edge(&mut root);
@@ -58,10 +62,54 @@ struct Node<'a> {
     edges: Vec<(char, Edge<'a>)>,
 }
 
-#[derive(Default)]
 struct Edge<'a> {
     chars: &'a [char],
-    child: Option<Node<'a>>,
+    child: Child<'a>,
+}
+
+impl Default for Edge<'_> {
+    fn default() -> Self {
+        Self {
+            chars: Default::default(),
+            child: Default::default(),
+        }
+    }
+}
+
+enum Child<'a> {
+    Node(Node<'a>),
+    Value(Option<i32>),
+}
+
+impl<'a> Child<'a> {
+    fn get_mut(&mut self, char: char) -> Option<&mut Edge<'a>> {
+        match self {
+            Self::Node(node) => node
+                .edges
+                .iter_mut()
+                .find_map(|(c, child)| if *c == char { Some(child) } else { None }),
+            Self::Value(_) => None,
+        }
+    }
+
+    fn push(&mut self, char: char, edge: Edge<'a>) {
+        match self {
+            Self::Node(node) => {
+                node.edges.push((char, edge));
+            }
+            Self::Value(_) => {
+                *self = Self::Node(Node {
+                    edges: vec![(char, edge)],
+                })
+            }
+        }
+    }
+}
+
+impl Default for Child<'_> {
+    fn default() -> Self {
+        Self::Node(Node::default())
+    }
 }
 
 #[wasm_bindgen(getter_with_clone)]
@@ -81,7 +129,7 @@ impl Config {
     }
 }
 
-fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char]) {
+fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char], value: Option<i32>) {
     if key.is_empty() {
         return;
     };
@@ -92,30 +140,22 @@ fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char]) {
             let len = key.len().min(root.chars.len());
             let Some(char) = key.get(len) else {
                 // Note: violates prefix precondition
+                root.child = Child::Value(value);
                 return;
             };
 
             let key = &key[len + 1..];
 
-            match root
-                .child
-                .iter_mut()
-                .flat_map(|node| node.edges.iter_mut())
-                .find_map(|(c, child)| if c == char { Some(child) } else { None })
-            {
-                None => root
-                    .child
-                    .get_or_insert_default()
-                    .edges
-                    .push((*char, path(config, key))),
-                Some(child) => insert(config, child, key),
+            match root.child.get_mut(*char) {
+                None => root.child.push(*char, path(config, key, value)),
+                Some(child) => insert(config, child, key, value),
             }
         }
         // Partial match
         Some(i) => {
             let child = core::mem::take(&mut root.child);
 
-            root.child = Some(Node {
+            root.child = Child::Node(Node {
                 edges: vec![
                     (
                         root.chars[i],
@@ -124,7 +164,7 @@ fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char]) {
                             child,
                         },
                     ),
-                    (key[i], path(config, &key[i + 1..])),
+                    (key[i], path(config, &key[i + 1..], value)),
                 ],
             });
             root.chars = &root.chars[..i];
@@ -132,27 +172,28 @@ fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char]) {
     }
 }
 
-fn path<'a>(config: &Config, key: &'a [char]) -> Edge<'a> {
+fn path<'a>(config: &Config, key: &'a [char], value: Option<i32>) -> Edge<'a> {
     if key.len() > config.max_edge_len {
         Edge {
             chars: &key[..config.max_edge_len],
-            child: Some(Node {
+            child: Child::Node(Node {
                 edges: vec![(
                     key[config.max_edge_len],
-                    path(config, &key[config.max_edge_len + 1..]),
+                    path(config, &key[config.max_edge_len + 1..], value),
                 )],
             }),
         }
     } else {
+        log(&format!("value = {value:?}"));
         Edge {
             chars: key,
-            child: None,
+            child: Child::Value(value),
         }
     }
 }
 
 fn sort_edge(root: &mut Edge) {
-    if let Some(node) = &mut root.child {
+    if let Child::Node(node) = &mut root.child {
         sort_node(node);
     }
 }
@@ -170,7 +211,7 @@ fn convert_edge(
     graph: &mut VisualGraph,
 ) {
     root.chars.iter().for_each(|c| stack.push(*c));
-    let child = convert_node(config, root.child.as_ref(), stack, graph);
+    let child = convert_child(config, &root.child, stack, graph);
     root.chars.iter().map(|_| stack.pop()).count();
 
     let arrow = Arrow::new(
@@ -186,15 +227,16 @@ fn convert_edge(
     graph.add_edge(arrow, parent, child);
 }
 
-fn convert_node(
+fn convert_child(
     config: &Config,
-    root: Option<&Node>,
+    root: &Child,
     stack: &mut String,
     graph: &mut VisualGraph,
 ) -> NodeHandle {
     let (shape, len) = match root {
-        None => (ShapeKind::Circle(String::new()), 0),
-        Some(root) => {
+        Child::Value(None) => (ShapeKind::Circle(String::new()), 0),
+        Child::Value(Some(value)) => (ShapeKind::Circle(value.to_string()), 1),
+        Child::Node(root) => {
             let len = config
                 .node_sizes
                 .iter()
@@ -267,7 +309,7 @@ fn convert_node(
 
     let parent = graph.add_node(parent);
 
-    if let Some(root) = root {
+    if let Child::Node(root) = root {
         root.edges.iter().for_each(|(c, edge)| {
             stack.push(*c);
             convert_edge(config, edge, parent, stack, graph);
