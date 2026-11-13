@@ -269,24 +269,26 @@ fn render_child(
                 .iter()
                 .copied()
                 .find(|size| *size >= root.edges.len())
-                .unwrap_or(root.edges.len());
+                .unwrap_or(26);
 
             let mut edges = 0u32;
             root.edges
                 .iter()
                 .for_each(|(c, _)| edges |= 1 << (*c - b'a'));
 
-            let mut record = if config.node.len() > 1 {
-                vec![RecordDef::Text(format!("Node{}", len), None)]
-            } else {
+            let mut record = if config.node.is_empty() {
                 Vec::new()
+            } else {
+                vec![RecordDef::Text(format!("Node{}", len), None)]
             };
 
             let mut offset = 0;
             while edges > 0 {
                 let i = edges.trailing_zeros();
 
-                if let Some(prev) = i.checked_sub(1) {
+                if len == 26
+                    && let Some(prev) = i.checked_sub(1)
+                {
                     let lo = offset_to_alpha(offset as u8);
                     let hi = offset_to_alpha((offset + prev) as u8);
                     record.push(RecordDef::Text(
@@ -309,17 +311,23 @@ fn render_child(
                 edges >>= i + 1;
             }
 
-            if offset < 26 {
-                let lo = offset_to_alpha(offset as u8);
-                let hi = offset_to_alpha(25);
-                record.push(RecordDef::Text(
-                    if lo == hi {
-                        String::from(lo)
-                    } else {
-                        format!("{lo}..={hi}")
-                    },
-                    None,
-                ))
+            if len == 26 {
+                if offset < 26 {
+                    let lo = offset_to_alpha(offset as u8);
+                    let hi = offset_to_alpha(25);
+                    record.push(RecordDef::Text(
+                        if lo == hi {
+                            String::from(lo)
+                        } else {
+                            format!("{lo}..={hi}")
+                        },
+                        None,
+                    ))
+                }
+            } else {
+                record.extend(
+                    (0..len - root.edges.len()).map(|_| RecordDef::Text(String::new(), None)),
+                )
             }
 
             let len = record.len();
