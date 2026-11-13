@@ -20,9 +20,8 @@ extern "C" {
 }
 
 #[wasm_bindgen]
-pub fn tree(max_edge_len: usize, data: &str) -> String {
+pub fn tree(config: &Config, data: &str) -> String {
     let mut root = Edge::default();
-    let config = Config { max_edge_len };
 
     let data = data
         .split_whitespace()
@@ -30,8 +29,10 @@ pub fn tree(max_edge_len: usize, data: &str) -> String {
         .collect::<Vec<_>>();
 
     for line in &data {
-        insert(&config, &mut root, line);
+        insert(config, &mut root, line);
     }
+
+    sort_edge(&mut root);
 
     let mut graph = VisualGraph::new(Orientation::TopToBottom);
 
@@ -42,7 +43,7 @@ pub fn tree(max_edge_len: usize, data: &str) -> String {
         Point::zero(),
     ));
 
-    convert_edge(&root, node, &mut String::new(), &mut graph);
+    convert_edge(config, &root, node, &mut String::new(), &mut graph);
 
     let mut svg = SVGWriter::new();
     graph.do_it(false, false, false, &mut svg);
@@ -63,8 +64,21 @@ struct Edge<'a> {
     child: Option<Node<'a>>,
 }
 
-struct Config {
+#[wasm_bindgen(getter_with_clone)]
+pub struct Config {
     max_edge_len: usize,
+    node_sizes: Vec<usize>,
+}
+
+#[wasm_bindgen]
+impl Config {
+    #[wasm_bindgen(constructor)]
+    pub fn new(max_edge_len: usize, node_sizes: Vec<usize>) -> Self {
+        Self {
+            max_edge_len,
+            node_sizes,
+        }
+    }
 }
 
 fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [char]) {
@@ -137,9 +151,26 @@ fn path<'a>(config: &Config, key: &'a [char]) -> Edge<'a> {
     }
 }
 
-fn convert_edge(root: &Edge, parent: NodeHandle, stack: &mut String, graph: &mut VisualGraph) {
+fn sort_edge(root: &mut Edge) {
+    if let Some(node) = &mut root.child {
+        sort_node(node);
+    }
+}
+
+fn sort_node(node: &mut Node) {
+    node.edges.sort_unstable_by_key(|(c, _)| *c);
+    node.edges.iter_mut().for_each(|(_, edge)| sort_edge(edge));
+}
+
+fn convert_edge(
+    config: &Config,
+    root: &Edge,
+    parent: NodeHandle,
+    stack: &mut String,
+    graph: &mut VisualGraph,
+) {
     root.chars.iter().for_each(|c| stack.push(*c));
-    let child = convert_node(root.child.as_ref(), stack, graph);
+    let child = convert_node(config, root.child.as_ref(), stack, graph);
     root.chars.iter().map(|_| stack.pop()).count();
 
     let arrow = Arrow::new(
@@ -155,25 +186,83 @@ fn convert_edge(root: &Edge, parent: NodeHandle, stack: &mut String, graph: &mut
     graph.add_edge(arrow, parent, child);
 }
 
-fn convert_node(root: Option<&Node>, stack: &mut String, graph: &mut VisualGraph) -> NodeHandle {
+fn convert_node(
+    config: &Config,
+    root: Option<&Node>,
+    stack: &mut String,
+    graph: &mut VisualGraph,
+) -> NodeHandle {
     let (shape, len) = match root {
         None => (ShapeKind::Circle(String::new()), 0),
-        Some(root) => (
-            ShapeKind::Record(RecordDef::Array(
-                root.edges
-                    .iter()
-                    .map(|(c, _)| RecordDef::Text(String::from(*c), Some(format!("{stack}{c}"))))
-                    .collect::<Vec<_>>(),
-            )),
-            root.edges.len(),
-        ),
+        Some(root) => {
+            let len = config
+                .node_sizes
+                .iter()
+                .copied()
+                .find(|size| *size >= root.edges.len())
+                .unwrap_or(root.edges.len());
+
+            let mut edges = 0u32;
+            root.edges
+                .iter()
+                .for_each(|(c, _)| edges |= 1 << (*c as u32).saturating_sub('a' as u32).min(26));
+
+            let mut record = if config.node_sizes.len() > 1 {
+                vec![RecordDef::Text(format!("Node{}", len), None)]
+            } else {
+                Vec::new()
+            };
+
+            let mut offset = 0;
+            while edges > 0 {
+                let i = edges.trailing_zeros();
+
+                if let Some(prev) = i.checked_sub(1) {
+                    let lo = offset_to_alpha(offset as u8);
+                    let hi = offset_to_alpha((offset + prev) as u8);
+                    record.push(RecordDef::Text(
+                        if lo == hi {
+                            String::from(lo)
+                        } else {
+                            format!("{lo}..={hi}")
+                        },
+                        None,
+                    ))
+                }
+
+                let c = offset_to_alpha((i + offset) as u8);
+                record.push(RecordDef::Text(
+                    String::from(c),
+                    Some(format!("{stack}{c}")),
+                ));
+
+                offset += i + 1;
+                edges >>= i + 1;
+            }
+
+            if offset < 26 {
+                let lo = offset_to_alpha(offset as u8);
+                let hi = offset_to_alpha(25);
+                record.push(RecordDef::Text(
+                    if lo == hi {
+                        String::from(lo)
+                    } else {
+                        format!("{lo}..={hi}")
+                    },
+                    None,
+                ))
+            }
+
+            let len = record.len();
+            (ShapeKind::Record(RecordDef::Array(record)), len)
+        }
     };
 
     let parent = Element::create(
         shape,
         StyleAttr::simple(),
         Orientation::LeftToRight,
-        Point::new((30 * len) as f64, 30.),
+        Point::new((50 * len) as f64, 50.),
     );
 
     let parent = graph.add_node(parent);
@@ -181,10 +270,14 @@ fn convert_node(root: Option<&Node>, stack: &mut String, graph: &mut VisualGraph
     if let Some(root) = root {
         root.edges.iter().for_each(|(c, edge)| {
             stack.push(*c);
-            convert_edge(edge, parent, stack, graph);
+            convert_edge(config, edge, parent, stack, graph);
             stack.pop();
         });
     }
 
     parent
+}
+
+fn offset_to_alpha(offset: u8) -> char {
+    (b'a' + offset.min(25)) as char
 }
