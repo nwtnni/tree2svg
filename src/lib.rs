@@ -23,23 +23,21 @@ extern "C" {
 #[wasm_bindgen]
 pub fn tree(config: &Config, data: &str) -> String {
     let mut root = Edge::default();
-    let mut highlight = None;
+    let mut step = None;
 
     data.lines()
+        .take(config.step.unwrap_or(usize::MAX))
         .map(|line| match line.split_once('=') {
             None => (line, None),
             Some((key, value)) => (key, value.trim().parse::<i32>().ok()),
         })
         .map(|(key, value)| (key.trim(), value))
-        .enumerate()
-        .filter(|(_, (key, _))| !key.is_empty())
-        .filter(|(_, (key, _))| key.chars().all(|char| char.is_ascii_lowercase()))
-        .map(|(i, (key, value))| (i, (key.as_bytes(), value)))
-        .for_each(|(i, (key, value))| {
-            if config.highlight.is_some_and(|j| i == j) {
-                highlight = Some(key);
-            }
-
+        .filter(|(key, _)| !key.is_empty())
+        .filter(|(key, _)| key.chars().all(|char| char.is_ascii_lowercase()))
+        .map(|(key, value)| (key.as_bytes(), value))
+        .for_each(|(key, value)| {
+            // Highlight last step
+            step = Some(key);
             insert(config, &mut root, key, value);
         });
 
@@ -54,14 +52,7 @@ pub fn tree(config: &Config, data: &str) -> String {
         Point::zero(),
     ));
 
-    render_edge(
-        config,
-        highlight,
-        &root,
-        node,
-        &mut String::new(),
-        &mut graph,
-    );
+    render_edge(config, step, &root, node, &mut String::new(), &mut graph);
 
     let mut svg = SVGWriter::new();
     graph.do_it(false, false, false, &mut svg);
@@ -110,25 +101,35 @@ impl Default for Child<'_> {
 
 #[wasm_bindgen(getter_with_clone)]
 pub struct Config {
-    max_edge_len: usize,
-    node_sizes: Vec<usize>,
-    highlight: Option<usize>,
+    edge: usize,
+    node: Vec<usize>,
+    step: Option<usize>,
 }
 
 #[wasm_bindgen]
 impl Config {
     #[wasm_bindgen(constructor)]
-    pub fn new(max_edge_len: usize, node_sizes: Vec<usize>) -> Self {
+    pub fn new(edge: usize, node: Vec<usize>) -> Self {
         Self {
-            max_edge_len,
-            node_sizes,
-            highlight: None,
+            edge,
+            node,
+            step: None,
         }
     }
 
     #[wasm_bindgen(setter)]
-    pub fn set_highlight(&mut self, highlight: Option<usize>) {
-        self.highlight = highlight;
+    pub fn set_step(&mut self, step: Option<usize>) {
+        self.step = step;
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_edge(&mut self, edge: usize) {
+        self.edge = edge;
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_node(&mut self, node: Vec<usize>) {
+        self.node = node;
     }
 }
 
@@ -187,13 +188,13 @@ fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [u8], value: Option
 }
 
 fn path<'a>(config: &Config, key: &'a [u8], value: Option<i32>) -> Edge<'a> {
-    if key.len() > config.max_edge_len {
+    if key.len() > config.edge {
         Edge {
-            chars: &key[..config.max_edge_len],
+            chars: &key[..config.edge],
             child: Child::Node(Node {
                 edges: vec![(
-                    key[config.max_edge_len],
-                    path(config, &key[config.max_edge_len + 1..], value),
+                    key[config.edge],
+                    path(config, &key[config.edge + 1..], value),
                 )],
             }),
         }
@@ -218,14 +219,14 @@ fn sort_node(node: &mut Node) {
 
 fn render_edge(
     config: &Config,
-    highlight: Option<&[u8]>,
+    step: Option<&[u8]>,
     root: &Edge,
     parent: NodeHandle,
     stack: &mut String,
     graph: &mut VisualGraph,
 ) {
     root.chars.iter().for_each(|c| stack.push(*c as char));
-    let child = render_child(config, highlight, &root.child, stack, graph);
+    let child = render_child(config, step, &root.child, stack, graph);
     root.chars.iter().map(|_| stack.pop()).count();
 
     let arrow = Arrow::new(
@@ -238,8 +239,8 @@ fn render_edge(
             .map(|byte| *byte as char)
             .collect::<String>(),
         &StyleAttr {
-            line_color: if highlight.is_some_and(|key| key.starts_with(stack.as_bytes())) {
-                Color::fast("blue")
+            line_color: if step.is_some_and(|key| key.starts_with(stack.as_bytes())) {
+                Color::fast("green")
             } else {
                 Color::fast("black")
             },
@@ -254,7 +255,7 @@ fn render_edge(
 
 fn render_child(
     config: &Config,
-    highlight: Option<&[u8]>,
+    step: Option<&[u8]>,
     root: &Child,
     stack: &mut String,
     graph: &mut VisualGraph,
@@ -264,7 +265,7 @@ fn render_child(
         Child::Value(Some(value)) => (ShapeKind::Circle(value.to_string()), 1),
         Child::Node(root) => {
             let len = config
-                .node_sizes
+                .node
                 .iter()
                 .copied()
                 .find(|size| *size >= root.edges.len())
@@ -275,7 +276,7 @@ fn render_child(
                 .iter()
                 .for_each(|(c, _)| edges |= 1 << (*c - b'a'));
 
-            let mut record = if config.node_sizes.len() > 1 {
+            let mut record = if config.node.len() > 1 {
                 vec![RecordDef::Text(format!("Node{}", len), None)]
             } else {
                 Vec::new()
@@ -338,7 +339,7 @@ fn render_child(
     if let Child::Node(root) = root {
         root.edges.iter().for_each(|(c, edge)| {
             stack.push(*c as char);
-            render_edge(config, highlight, edge, parent, stack, graph);
+            render_edge(config, step, edge, parent, stack, graph);
             stack.pop();
         });
     }
