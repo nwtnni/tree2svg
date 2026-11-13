@@ -1,6 +1,7 @@
 use layout::adt::dag::NodeHandle;
 use layout::backends::svg::SVGWriter;
 use layout::core::base::Orientation;
+use layout::core::color::Color;
 use layout::core::geometry::Point;
 use layout::core::style::LineStyleKind;
 use layout::core::style::StyleAttr;
@@ -22,6 +23,7 @@ extern "C" {
 #[wasm_bindgen]
 pub fn tree(config: &Config, data: &str) -> String {
     let mut root = Edge::default();
+    let mut highlight = None;
 
     data.lines()
         .map(|line| match line.split_once('=') {
@@ -29,10 +31,15 @@ pub fn tree(config: &Config, data: &str) -> String {
             Some((key, value)) => (key, value.trim().parse::<i32>().ok()),
         })
         .map(|(key, value)| (key.trim(), value))
-        .filter(|(key, _)| !key.is_empty())
-        .filter(|(key, _)| key.chars().all(|char| char.is_ascii_lowercase()))
-        .map(|(key, value)| (key.as_bytes(), value))
-        .for_each(|(key, value)| {
+        .enumerate()
+        .filter(|(_, (key, _))| !key.is_empty())
+        .filter(|(_, (key, _))| key.chars().all(|char| char.is_ascii_lowercase()))
+        .map(|(i, (key, value))| (i, (key.as_bytes(), value)))
+        .for_each(|(i, (key, value))| {
+            if config.highlight.is_some_and(|j| i == j) {
+                highlight = Some(key);
+            }
+
             insert(config, &mut root, key, value);
         });
 
@@ -47,7 +54,14 @@ pub fn tree(config: &Config, data: &str) -> String {
         Point::zero(),
     ));
 
-    render_edge(config, &root, node, &mut String::new(), &mut graph);
+    render_edge(
+        config,
+        highlight,
+        &root,
+        node,
+        &mut String::new(),
+        &mut graph,
+    );
 
     let mut svg = SVGWriter::new();
     graph.do_it(false, false, false, &mut svg);
@@ -204,13 +218,14 @@ fn sort_node(node: &mut Node) {
 
 fn render_edge(
     config: &Config,
+    highlight: Option<&[u8]>,
     root: &Edge,
     parent: NodeHandle,
     stack: &mut String,
     graph: &mut VisualGraph,
 ) {
     root.chars.iter().for_each(|c| stack.push(*c as char));
-    let child = render_child(config, &root.child, stack, graph);
+    let child = render_child(config, highlight, &root.child, stack, graph);
     root.chars.iter().map(|_| stack.pop()).count();
 
     let arrow = Arrow::new(
@@ -222,7 +237,14 @@ fn render_edge(
             .iter()
             .map(|byte| *byte as char)
             .collect::<String>(),
-        &StyleAttr::simple(),
+        &StyleAttr {
+            line_color: if highlight.is_some_and(|key| key.starts_with(stack.as_bytes())) {
+                Color::fast("blue")
+            } else {
+                Color::fast("black")
+            },
+            ..StyleAttr::simple()
+        },
         &Some(stack.clone()),
         &None,
     );
@@ -232,6 +254,7 @@ fn render_edge(
 
 fn render_child(
     config: &Config,
+    highlight: Option<&[u8]>,
     root: &Child,
     stack: &mut String,
     graph: &mut VisualGraph,
@@ -315,7 +338,7 @@ fn render_child(
     if let Child::Node(root) = root {
         root.edges.iter().for_each(|(c, edge)| {
             stack.push(*c as char);
-            render_edge(config, edge, parent, stack, graph);
+            render_edge(config, highlight, edge, parent, stack, graph);
             stack.pop();
         });
     }
