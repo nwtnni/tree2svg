@@ -47,7 +47,7 @@ pub fn tree(config: &Config, data: &str) -> String {
         Point::zero(),
     ));
 
-    convert_edge(config, &root, node, &mut String::new(), &mut graph);
+    render_edge(config, &root, node, &mut String::new(), &mut graph);
 
     let mut svg = SVGWriter::new();
     graph.do_it(false, false, false, &mut svg);
@@ -74,16 +74,6 @@ enum Child<'a> {
 }
 
 impl<'a> Child<'a> {
-    fn get_mut(&mut self, char: u8) -> Option<&mut Edge<'a>> {
-        match self {
-            Self::Node(node) => node
-                .edges
-                .iter_mut()
-                .find_map(|(c, child)| if *c == char { Some(child) } else { None }),
-            Self::Value(_) => None,
-        }
-    }
-
     fn push(&mut self, char: u8, edge: Edge<'a>) {
         match self {
             Self::Node(node) => {
@@ -100,7 +90,7 @@ impl<'a> Child<'a> {
 
 impl Default for Child<'_> {
     fn default() -> Self {
-        Self::Node(Node::default())
+        Self::Value(None)
     }
 }
 
@@ -121,29 +111,45 @@ impl Config {
             highlight: None,
         }
     }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_highlight(&mut self, highlight: Option<usize>) {
+        self.highlight = highlight;
+    }
 }
 
 fn insert<'a>(config: &Config, root: &mut Edge<'a>, key: &'a [u8], value: Option<i32>) {
-    if key.is_empty() {
-        return;
-    };
-
     match key.iter().zip(root.chars).position(|(k, e)| k != e) {
         // Full match
         None => {
             let len = key.len().min(root.chars.len());
             let Some(char) = key.get(len) else {
                 // Note: violates prefix precondition
+                // value overwrites node
                 root.child = Child::Value(value);
                 return;
             };
 
-            let key = &key[len + 1..];
-
-            match root.child.get_mut(*char) {
-                None => root.child.push(*char, path(config, key, value)),
-                Some(child) => insert(config, child, key, value),
+            match &mut root.child {
+                Child::Value(None) => {
+                    *root = path(config, key, value);
+                    return;
+                }
+                // Note: violates prefix precondition
+                // node overwrites value
+                Child::Value(Some(_)) => (),
+                Child::Node(node) => {
+                    if let Some(child) = node
+                        .edges
+                        .iter_mut()
+                        .find_map(|(c, child)| if c == char { Some(child) } else { None })
+                    {
+                        return insert(config, child, &key[len + 1..], value);
+                    }
+                }
             }
+
+            root.child.push(*char, path(config, &key[len + 1..], value))
         }
         // Partial match
         Some(i) => {
@@ -196,7 +202,7 @@ fn sort_node(node: &mut Node) {
     node.edges.iter_mut().for_each(|(_, edge)| sort_edge(edge));
 }
 
-fn convert_edge(
+fn render_edge(
     config: &Config,
     root: &Edge,
     parent: NodeHandle,
@@ -204,7 +210,7 @@ fn convert_edge(
     graph: &mut VisualGraph,
 ) {
     root.chars.iter().for_each(|c| stack.push(*c as char));
-    let child = convert_child(config, &root.child, stack, graph);
+    let child = render_child(config, &root.child, stack, graph);
     root.chars.iter().map(|_| stack.pop()).count();
 
     let arrow = Arrow::new(
@@ -224,7 +230,7 @@ fn convert_edge(
     graph.add_edge(arrow, parent, child);
 }
 
-fn convert_child(
+fn render_child(
     config: &Config,
     root: &Child,
     stack: &mut String,
@@ -309,7 +315,7 @@ fn convert_child(
     if let Child::Node(root) = root {
         root.edges.iter().for_each(|(c, edge)| {
             stack.push(*c as char);
-            convert_edge(config, edge, parent, stack, graph);
+            render_edge(config, edge, parent, stack, graph);
             stack.pop();
         });
     }
